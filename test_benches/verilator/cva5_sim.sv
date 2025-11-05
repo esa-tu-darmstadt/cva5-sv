@@ -481,7 +481,7 @@ module cva5_sim
     end endgenerate*/
     generate if (ENABLE_DECODE_INJECT) begin
          for (genvar i = 0; i < RETIRE_PORTS; i++) begin : retirechk
-             id_t retire_fetch_id;
+             fetch_id_t retire_fetch_id;
              wire has_fetch_id = cpu.id_block.gen_scaiev_injectable.pops_fetch_id[cpu.retire_ids[i]];
              assign retire_fetch_id = cpu.id_block.gen_scaiev_injectable.pc_fetch_id_translation[cpu.retire_ids[i]];
              assign retire_ports_pc[i] = cpu.id_block.gen_scaiev_injectable.pc_table[retire_fetch_id];

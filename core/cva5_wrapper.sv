@@ -201,6 +201,11 @@ l2_memory_interface arb_mem();
 
 trace_outputs_t tr;
 
+interrupt_t m_interrupt;
+assign m_interrupt.software = 1'b0;
+assign m_interrupt.timer = timer_interrupt;
+assign m_interrupt.external = interrupt;
+
 scaiev_interface scaiev();
 
 cva5 cva5 (
@@ -221,7 +226,7 @@ cva5 cva5 (
 	.scaiev(scaiev),
 
 	.s_interrupt(0),
-	.m_interrupt(0)
+	.m_interrupt(m_interrupt)
 );
 
 l2_arbiter l2_arb (

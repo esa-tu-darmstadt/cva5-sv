@@ -38,6 +38,7 @@ module gc_unit
         //Decode
         unit_issue_interface.unit issue,
         input gc_inputs_t gc_inputs,
+        input issue_stage_valid,
 
         //Branch miss predict
         input logic branch_flush,
@@ -113,7 +114,7 @@ module gc_unit
     //LS exceptions (miss-aligned, TLB and MMU) (issue stage)
     //fetch flush, take exception. If execute or later exception occurs first, exception is overridden
 
-    typedef enum {RST_STATE, PRE_CLEAR_STATE, INIT_CLEAR_STATE, IDLE_STATE, TLB_CLEAR_STATE, POST_ISSUE_DRAIN, PRE_ISSUE_FLUSH, POST_ISSUE_DISCARD} gc_state;
+    typedef enum {RST_STATE, PRE_CLEAR_STATE, INIT_CLEAR_STATE, IDLE_STATE, TLB_CLEAR_STATE, WAIT_INTERRUPT, POST_ISSUE_DRAIN, PRE_ISSUE_FLUSH, POST_ISSUE_DISCARD} gc_state;
     gc_state state;
     gc_state next_state;
 
@@ -128,6 +129,7 @@ module gc_unit
     //GC registered global outputs
     logic gc_init_clear;
     logic gc_fetch_hold;
+    logic gc_rename_hold;
     logic gc_issue_hold;
     logic gc_fetch_flush;
     logic gc_writeback_supress;
@@ -168,7 +170,8 @@ module gc_unit
 
     always_ff @ (posedge clk) begin
         gc_fetch_hold <= next_state inside {PRE_CLEAR_STATE, INIT_CLEAR_STATE, POST_ISSUE_DRAIN, PRE_ISSUE_FLUSH};
-        gc_issue_hold <= processing_csr | (next_state inside {PRE_CLEAR_STATE, INIT_CLEAR_STATE, TLB_CLEAR_STATE, POST_ISSUE_DRAIN, PRE_ISSUE_FLUSH, POST_ISSUE_DISCARD});
+        gc_rename_hold <= next_state inside {POST_ISSUE_DISCARD}; //renamer occupied with rolling back, can't perform renames for new instructions yet
+        gc_issue_hold <= processing_csr | (next_state inside {PRE_CLEAR_STATE, INIT_CLEAR_STATE, TLB_CLEAR_STATE, WAIT_INTERRUPT, POST_ISSUE_DRAIN, PRE_ISSUE_FLUSH, POST_ISSUE_DISCARD});
         gc_writeback_supress <= next_state inside {PRE_CLEAR_STATE, INIT_CLEAR_STATE, POST_ISSUE_DISCARD};
         gc_retire_hold <= next_state inside {PRE_ISSUE_FLUSH};
         gc_init_clear <= next_state inside {INIT_CLEAR_STATE};
@@ -177,6 +180,7 @@ module gc_unit
     end
     //work-around for verilator BLKANDNBLK signal optimizations
     assign gc.fetch_hold = gc_fetch_hold;
+    assign gc.rename_hold = gc_rename_hold;
     assign gc.issue_hold = gc_issue_hold;
     assign gc.writeback_supress = CONFIG.INCLUDE_M_MODE & gc_writeback_supress;
     assign gc.retire_hold = gc_retire_hold;
@@ -192,6 +196,9 @@ module gc_unit
             state <= next_state;
     end
 
+    logic possible_exception;
+    assign possible_exception = post_issue_count != '0; //very rough backport
+
     always_comb begin
         next_state = state;
         case (state)
@@ -201,11 +208,23 @@ module gc_unit
             IDLE_STATE : begin
                 if (gc.exception.valid)//new pending exception is also oldest instruction
                     next_state = PRE_ISSUE_FLUSH;
-                else if (issue.new_request | interrupt_pending | gc.exception_pending)
+                else if (issue.new_request | gc.exception_pending)
                     next_state = POST_ISSUE_DRAIN;
+                else if (interrupt_pending)
+                    next_state = WAIT_INTERRUPT;
+            end
+            WAIT_INTERRUPT: begin
+                if (gc.exception.valid) //Exception overrides interrupt
+                    next_state = PRE_ISSUE_FLUSH;
+                else if (gc.exception_pending) //Exception overrides interrupt
+                    next_state = POST_ISSUE_DRAIN;
+                else if (~interrupt_pending) //Something cancelled the interrupt
+                    next_state = IDLE_STATE;
+                else if (~possible_exception & issue_stage_valid & ~branch_flush & post_issue_idle) //No more possible exceptions and issue stage has correct PC
+                    next_state = PRE_ISSUE_FLUSH;
             end
             TLB_CLEAR_STATE : if (tlb_clear_done) next_state = IDLE_STATE;
-            POST_ISSUE_DRAIN : if (((ifence_in_progress | ret_in_progress) & post_issue_idle) | gc.exception.valid | interrupt_pending) next_state = PRE_ISSUE_FLUSH;
+            POST_ISSUE_DRAIN : if (((ifence_in_progress | ret_in_progress) & post_issue_idle) | gc.exception.valid) next_state = PRE_ISSUE_FLUSH;
             PRE_ISSUE_FLUSH : next_state = POST_ISSUE_DISCARD;
             POST_ISSUE_DISCARD : if ((post_issue_count == 0) & load_store_status.no_released_stores_pending & scaiev.no_writebacks_pending) next_state = IDLE_STATE;
             default : next_state = RST_STATE;

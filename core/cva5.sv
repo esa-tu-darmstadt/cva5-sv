@@ -73,7 +73,7 @@ module cva5
     localparam int unsigned IEC_UNIT_ID = BRANCH_UNIT_ID + 1;
 
     //Total number of units
-    localparam int unsigned NUM_UNITS = IEC_UNIT_ID + 1; 
+    localparam int unsigned NUM_UNITS = IEC_UNIT_ID + 1;
 
     localparam unit_id_param_t UNIT_IDS = '{
         ALU : ALU_UNIT_ID,
@@ -165,14 +165,14 @@ module cva5
 
     //Instruction ID/Metadata
         //ID issuing
-    id_t pc_id;
+    fetch_id_t pc_id;
     logic pc_id_available;
     logic pc_id_assigned;
     logic [31:0] if_pc;
     logic pc_inject_id_available; //SCAIE-V
     logic pc_inject_id_assigned; //SCAIE-V
         //Fetch stage
-    id_t fetch_id;
+    fetch_id_t fetch_id;
     logic fetch_complete;
     logic [31:0] fetch_instruction;
     logic early_branch_flush;
@@ -315,7 +315,6 @@ module cva5
         end
     endgenerate
 
-
     generate if (CONFIG.INCLUDE_SCAIEV) begin : gen_scaiev_branch
             assign branch_flush = branch_flush_branch | branch_flush_scaiev;
             assign br_results = br_results_scaiev_override ? br_results_scaiev : br_results_branch;
@@ -376,9 +375,11 @@ module cva5
     //1 - Decode (instruction_metadata_and_id_management.sv, decode_and_issue.sv, register_file.sv)
     //2 - Issue (register_file.sv, decode_and_issue.sv, scaiev_unit.sv)
     //3 - Execute (scaiev_unit.sv)
+    //4 - Writeback, Retire
 
     assign scaiev.fetch_fetchID = pc_id;
     //assign scaiev.fetch_fetchFlushID -> see instruction_metadata_and_id_management.sv
+    //assign scaiev.fetch_fetchFlushCount -> see instruction_metadata_and_id_management.sv
     //assign scaiev.fetch_PC -> see fetch.sv
     //assign scaiev.fetch_isStalling -> see fetch.sv
     //assign scaiev.fetch_Instr = fetch_instruction;
@@ -444,6 +445,7 @@ module cva5
         .instruction_issued (instruction_issued),
         .instruction_issued_with_rd (instruction_issued_with_rd),
         .wb_packet (wb_packet),
+        .wb_is_stallable (!unit_wb[UNIT_IDS.LS].done),
         .commit_packet (commit_packet),
         .retire (retire),
         .retire_ids (retire_ids),
@@ -474,13 +476,13 @@ module cva5
         .early_branch_flush_ras_adjust (early_branch_flush_ras_adjust),
         .if_pc (if_pc),
         .fetch_instruction (fetch_instruction),
-        .instruction_bram (instruction_bram), 
+        .instruction_bram (instruction_bram),
         .iwishbone (iwishbone),
         .icache_on ('1),
-        .tlb (itlb), 
+        .tlb (itlb),
         .tlb_on (tlb_on),
-        .l1_request (l1_request[L1_ICACHE_ID]), 
-        .l1_response (l1_response[L1_ICACHE_ID]), 
+        .l1_request (l1_request[L1_ICACHE_ID]),
+        .l1_response (l1_response[L1_ICACHE_ID]),
         .exception (1'b0),
         .tr_early_branch_correction (tr_early_branch_correction)
     );
@@ -512,16 +514,16 @@ module cva5
             .gc (gc),
             .abort_request (gc.fetch_flush | early_branch_flush | scaiev.fetch_flush | scaiev.decode_flush | scaiev.issue_flush),
             .asid (asid),
-            .tlb (itlb), 
+            .tlb (itlb),
             .mmu (immu)
         );
 
         mmu i_mmu (
             .clk (clk),
             .rst (rst),
-            .mmu (immu) , 
+            .mmu (immu) ,
             .abort_request (gc.fetch_flush | scaiev.fetch_flush | scaiev.decode_flush | scaiev.issue_flush),
-            .l1_request (l1_request[L1_IMMU_ID]), 
+            .l1_request (l1_request[L1_IMMU_ID]),
             .l1_response (l1_response[L1_IMMU_ID])
         );
 
@@ -535,7 +537,7 @@ module cva5
 
     ////////////////////////////////////////////////////
     //Renamer
-    renamer #(.CONFIG(CONFIG)) 
+    renamer #(.CONFIG(CONFIG))
     renamer_block (
         .clk (clk),
         .rst (rst),
@@ -637,7 +639,7 @@ module cva5
     ////////////////////////////////////////////////////
     //Execution Units
     branch_unit #(.CONFIG(CONFIG))
-    branch_unit_block ( 
+    branch_unit_block (
         .clk (clk),
         .rst (rst),
         .issue (unit_issue[UNIT_IDS.BR]),
@@ -656,7 +658,7 @@ module cva5
         .clk (clk),
         .rst (rst),
         .alu_inputs (alu_inputs),
-        .issue (unit_issue[UNIT_IDS.ALU]), 
+        .issue (unit_issue[UNIT_IDS.ALU]),
         .wb (unit_wb[UNIT_IDS.ALU])
     );
 
@@ -668,11 +670,11 @@ module cva5
         .ls_inputs (ls_inputs_actual),
         .issue (ls_unit_issue),
         .issue_scaiev_meta (ls_issue_scaiev_meta), //SCAIE-V
-        .dcache_on (1'b1), 
-        .clear_reservation (1'b0), 
+        .dcache_on (1'b1),
+        .clear_reservation (1'b0),
         .tlb (dtlb),
         .tlb_on (tlb_on),
-        .l1_request (l1_request[L1_DCACHE_ID]), 
+        .l1_request (l1_request[L1_DCACHE_ID]),
         .l1_response (l1_response[L1_DCACHE_ID]),
         .sc_complete (sc_complete),
         .sc_success (sc_success),
@@ -698,16 +700,16 @@ module cva5
             .gc (gc),
             .abort_request (1'b0),
             .asid (asid),
-            .tlb (dtlb), 
+            .tlb (dtlb),
             .mmu (dmmu)
         );
 
         mmu d_mmu (
             .clk (clk),
             .rst (rst),
-            .mmu (dmmu) , 
+            .mmu (dmmu) ,
             .abort_request (1'b0),
-            .l1_request (l1_request[L1_DMMU_ID]), 
+            .l1_request (l1_request[L1_DMMU_ID]),
             .l1_response (l1_response[L1_DMMU_ID])
         );
     end
@@ -724,7 +726,7 @@ module cva5
             .clk(clk),
             .rst(rst),
             .csr_inputs (csr_inputs),
-            .issue (unit_issue[UNIT_IDS.CSR]), 
+            .issue (unit_issue[UNIT_IDS.CSR]),
             .wb (unit_wb[UNIT_IDS.CSR]),
             .current_privilege(current_privilege),
             .interrupt_taken(interrupt_taken),
@@ -752,6 +754,7 @@ module cva5
         .rst (rst),
         .issue (unit_issue[UNIT_IDS.IEC]),
         .gc_inputs (gc_inputs),
+        .issue_stage_valid(issue.stage_valid),
         .branch_flush (branch_flush),
         .exception (exception),
         .exception_target_pc (exception_target_pc),
@@ -787,7 +790,7 @@ module cva5
             .clk (clk),
             .rst (rst),
             .div_inputs (div_inputs),
-            .issue (unit_issue[UNIT_IDS.DIV]), 
+            .issue (unit_issue[UNIT_IDS.DIV]),
             .wb (unit_wb[UNIT_IDS.DIV])
         );
     end endgenerate
@@ -805,7 +808,9 @@ module cva5
             .ls_issue_scaiev (ls_issue_scaiev),
             .ls_wb_scaiev (ls_wb_scaiev),
             .ls_issue_scaiev_stage (ls_issue_scaiev_meta.fromstage),
+            .ls_issue_scaiev_decoupled (ls_issue_scaiev_meta.decoupled),
             .ls_wb_scaiev_stage (ls_wb_scaiev_meta.fromstage),
+            .ls_wb_scaiev_decoupled (ls_wb_scaiev_meta.decoupled),
 
             .ls_exception_valid (exception[LS_EXCEPTION].valid),
             .ls_exception_id (exception[LS_EXCEPTION].id),

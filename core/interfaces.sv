@@ -25,11 +25,11 @@ interface branch_predictor_interface;
 
     //Fetch signals
     logic [31:0] if_pc;
-    id_t if_id;
+    fetch_id_t if_id;
     logic new_mem_request;
     logic [31:0] next_pc;
 
-    id_t pc_id;
+    fetch_id_t pc_id;
     logic pc_id_assigned;
     
     //Branch Predictor 
@@ -89,13 +89,14 @@ interface ras_interface;
     logic pop;
     logic branch_fetched;
     logic branch_retired;
+    logic valid;
 
     logic [31:0] new_addr;
     logic [31:0] addr;
 
     modport branch_predictor (output branch_retired);
-    modport self (input push, pop, new_addr, branch_fetched, branch_retired, output addr);
-    modport fetch (input addr, output pop, push, new_addr, branch_fetched);
+    modport self (input push, pop, new_addr, branch_fetched, branch_retired, output addr, valid);
+    modport fetch (input addr, valid, output pop, push, new_addr, branch_fetched);
 endinterface
 
 
@@ -286,7 +287,14 @@ interface addr_utils_interface #(parameter bit [31:0] BASE_ADDR = 32'h00000000, 
         localparam int unsigned BIT_RANGE = bit_range();
 
         function address_range_check (input logic[31:0] addr);
-            return (BIT_RANGE == 0) ? 1 : (addr[31:32-BIT_RANGE] == BASE_ADDR[31:32-BIT_RANGE]);
+            logic range_match;
+            int i;
+            range_match = 1;
+            for (i = 32-BIT_RANGE; i <= 31; i=i+1) begin
+                if (addr[i] != BASE_ADDR[i])
+                    range_match = 0;
+            end
+            return range_match;
         endfunction
 endinterface
 

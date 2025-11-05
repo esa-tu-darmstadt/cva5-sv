@@ -32,6 +32,7 @@ module store_queue
     ( 
         input logic clk,
         input logic rst,
+        input gc_outputs_t gc,
 
         input logic lq_push,
         input logic lq_pop,
@@ -66,6 +67,7 @@ module store_queue
     addr_hash_t [CONFIG.SQ_DEPTH-1:0] hashes;
     logic [CONFIG.SQ_DEPTH-1:0] released;
     forward_id_t [CONFIG.SQ_DEPTH-1:0] id_needed;
+    logic [CONFIG.SQ_DEPTH-1:0] forward_complete;
     load_check_count_t [CONFIG.SQ_DEPTH-1:0] load_check_count;
     logic [31:0] store_data_from_wb [CONFIG.SQ_DEPTH];
 
@@ -236,15 +238,39 @@ module store_queue
         wb_snoop_r <= wb_snoop;
     end
 
-    always_ff @ (posedge clk) begin
+    logic [CONFIG.SQ_DEPTH-1:0] applying_wb_snoop;
+    always_comb begin
         for (int i = 0; i < CONFIG.SQ_DEPTH; i++) begin
-            if ({1'b0, wb_snoop_r.valid, wb_snoop_r.id.is_from_instruction} == {released[i] && id_needed[i].is_from_instruction, 1'b1, id_needed[i].is_from_instruction}
+            applying_wb_snoop[i] = 1'b0;
+            if (!(released[i] && id_needed[i].is_from_instruction)
+                && !forward_complete[i]
+                && wb_snoop_r.valid
+                && (wb_snoop_r.id.is_from_instruction == id_needed[i].is_from_instruction)
                 && (wb_snoop_r.id.is_from_instruction
                    ? wb_snoop_r.id.id.instruction.id == id_needed[i].id.instruction.id
                    : wb_snoop_r.id.id.register_addr == id_needed[i].id.register_addr
                 )) begin
-                store_data_from_wb[i] <= wb_snoop_r.data;
+                applying_wb_snoop[i] = 1'b1;
             end
+        end
+    end
+    always_ff @ (posedge clk) begin
+        for (int i = 0; i < CONFIG.SQ_DEPTH; i++) begin
+            if (gc.init_clear)
+                forward_complete[i] <= 1'b1;
+            else if (sq.push && i==sq_index)
+                forward_complete[i] <= 1'b0;
+            else if (applying_wb_snoop[i])
+                forward_complete[i] <= 1'b1;
+        end
+    end
+
+    always_ff @ (posedge clk) begin
+        for (int i = 0; i < CONFIG.SQ_DEPTH; i++) begin
+            if (gc.init_clear)
+                store_data_from_wb[i] <= '0;
+            else if (applying_wb_snoop[i])
+                store_data_from_wb[i] <= wb_snoop_r.data;
         end
     end
     

@@ -41,7 +41,7 @@ module fetch
         input logic exception,
 
         //ID Support
-        input id_t pc_id,
+        input fetch_id_t pc_id,
         input logic pc_id_available,
         output logic pc_id_assigned,
         output logic fetch_complete,
@@ -153,7 +153,7 @@ module fetch
     );
     assign pc_mux[0] = gc.pc;
     assign pc_mux[1] = bp.branch_flush_pc;
-    assign pc_mux[2] = bp.is_return ? ras.addr : bp.predicted_pc;
+    assign pc_mux[2] = (bp.is_return & ras.valid) ? ras.addr : bp.predicted_pc;
     assign pc_mux[3] = pc_plus_4;
     assign next_pc_prescaiev = pc_mux[pc_sel];
     assign next_pc = scaiev.fetch_wrPCValid ? scaiev.fetch_wrPC : next_pc_prescaiev;//next_pc_prescaiev;//

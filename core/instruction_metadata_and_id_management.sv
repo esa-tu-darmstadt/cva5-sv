@@ -38,12 +38,12 @@ module instruction_metadata_and_id_management
         scaiev_interface.core scaiev,
 
         //Fetch
-        output id_t pc_id,
+        output fetch_id_t pc_id,
         output logic pc_id_available,
         input logic [31:0] if_pc,
         input logic pc_id_assigned,
 
-        output id_t fetch_id,
+        output fetch_id_t fetch_id,
         input logic early_branch_flush,
         input logic fetch_complete,
         input logic [31:0] fetch_instruction,
@@ -74,6 +74,7 @@ module instruction_metadata_and_id_management
 
         //WB
         input wb_packet_t wb_packet [CONFIG.NUM_WB_GROUPS],
+        input logic wb_is_stallable,
         output commit_packet_t commit_packet [CONFIG.NUM_WB_GROUPS],
 
         //Retirer
@@ -106,42 +107,43 @@ generate if (!ENABLE_DECODE_INJECT) begin : gen_vanilla
 end
 else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
     //////////////////////////////////////////
-    (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] pc_table [MAX_IDS];
-    (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] instruction_table [MAX_IDS];
-    (* ramstyle = "MLAB, no_rw_check" *) logic [0:0] valid_fetch_addr_table [MAX_IDS];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] pc_table [MAX_IDS_FETCH];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] instruction_table [MAX_IDS_FETCH];
 
     (* ramstyle = "MLAB, no_rw_check" *) phys_addr_t phys_addr_table [MAX_IDS];
     (* ramstyle = "MLAB, no_rw_check" *) logic [0:0] uses_rd_table [MAX_IDS];
 
-    (* ramstyle = "MLAB, no_rw_check" *) logic [$bits(fetch_metadata_t)-1:0] fetch_metadata_table [MAX_IDS];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [$bits(fetch_metadata_t)-1:0] fetch_metadata_table [MAX_IDS_FETCH];
 
-    (* ramstyle = "MLAB, no_rw_check" *) id_t pc_fetch_id_translation [MAX_IDS]; //Added for SCAIE-V
+    // TODO: Disable/Remove if SCAIE-V Decode Inject is unused.
+    (* ramstyle = "MLAB, no_rw_check" *) fetch_id_t pc_fetch_id_translation [MAX_IDS]; //Added for SCAIE-V
     //Set if pc_fetch_id_translation is valid for a given post-decode ID.
     //Also not set for instructions that have further repeats (only the last repeat will have has_fetch_id).
     (* ramstyle = "MLAB, no_rw_check" *) logic pops_fetch_id [MAX_IDS]; //Added for SCAIE-V
 
     (* ramstyle = "MLAB, no_rw_check" *) logic [$bits(exception_sources_t)-1:0] exception_unit_table [MAX_IDS];
 
-    id_t pre_decode_id;
+    fetch_id_t pre_decode_id;
     id_t post_decode_id; //Added for SCAIE-V Decode Inject - decoupling of decode..retire IDs from fetch..decode
     id_t oldest_pre_issue_id;
-    id_t oldest_pre_issue_fetch_id; //Added for SCAIE-V Decode Inject
+    fetch_id_t oldest_pre_issue_fetch_id; //Added for SCAIE-V Decode Inject
 
     id_t oldest_pre_decode_id; //Added for SCAIE-V decode_flush
-    id_t oldest_pre_decode_fetch_id; //Added for SCAIE-V Decode Inject
+    fetch_id_t oldest_pre_decode_fetch_id; //Added for SCAIE-V Decode Inject
 
     localparam ID_COUNTER_W = LOG2_MAX_IDS+1;
-    logic [LOG2_MAX_IDS:0] fetched_count_neg;
-    logic [LOG2_MAX_IDS:0] pre_issue_count;
-    logic [LOG2_MAX_IDS:0] pre_issue_count_next;
+    localparam ID_COUNTER_FETCH_W = LOG2_MAX_IDS_FETCH+1;
+    logic [LOG2_MAX_IDS_FETCH:0] fetched_count_neg;
+    logic [LOG2_MAX_IDS_FETCH:0] pre_issue_count;
+    logic [LOG2_MAX_IDS_FETCH:0] pre_issue_count_next;
     logic [LOG2_MAX_IDS:0] post_issue_count_next;
     logic [LOG2_MAX_IDS:0] post_decode_count; //Added for SCAIE-V Decode Inject
     logic [LOG2_MAX_IDS:0] post_decode_count_next; //Added for SCAIE-V Decode Inject
     logic [LOG2_MAX_IDS:0] post_issue_count_noninject;
     logic [LOG2_MAX_IDS:0] post_issue_count_noninject_next;
     //logic [LOG2_MAX_IDS:0] inflight_count; //Removed (not used due to SCAIE-V Decode Inject changes)
-    logic [LOG2_MAX_IDS:0] inflight_count_noninject;
-    logic [LOG2_MAX_IDS:0] inflight_count_noninject_next;
+    logic [LOG2_MAX_IDS_FETCH:0] inflight_count_noninject;
+    logic [LOG2_MAX_IDS_FETCH:0] inflight_count_noninject_next;
 
     retire_packet_t retire_next;
     logic [LOG2_RETIRE_PORTS : 0] retire_next_count_noninject; //Added for SCAIE-V Decode Inject
@@ -217,6 +219,10 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
     
     assign pop_pre_decode_instr = !pc_inject_keep_for_repeat && (pc_inject_is_repeat || !pc_inject_id_assigned);
 
+    function fetch_id_t incr_fetch_id_t_wrap(input fetch_id_t op);
+        return (op == LOG2_MAX_IDS_FETCH'(MAX_IDS_FETCH-1)) ? '0 : (op + 1);
+    endfunction
+
     //Next ID always increases, except on a fetch buffer flush.
     //On a fetch buffer flush, the next ID is restored to the oldest non-issued ID (decode or issue stage)
     //This prevents a stall in the case where all  IDs are either in-flight or
@@ -229,7 +235,7 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
         else if (instruction_issued) begin
             oldest_pre_issue_id <= oldest_pre_issue_id + 1;
             if (~scaiev.issue_injected)
-                oldest_pre_issue_fetch_id <= oldest_pre_issue_fetch_id + 1;
+                oldest_pre_issue_fetch_id <= incr_fetch_id_t_wrap(oldest_pre_issue_fetch_id);
         end
     end
     always_ff @ (posedge clk) begin
@@ -244,11 +250,31 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
         else if (decode_advance && !scaiev.decode_flush) begin
             oldest_pre_decode_id <= oldest_pre_decode_id + 1;
             if (pop_pre_decode_instr)
-                oldest_pre_decode_fetch_id <= oldest_pre_decode_fetch_id + 1;
+                oldest_pre_decode_fetch_id <= incr_fetch_id_t_wrap(oldest_pre_decode_fetch_id);
         end
     end
 
     assign scaiev.fetch_fetchFlushID = (gc.fetch_flush | scaiev.issue_flush) ? oldest_pre_issue_fetch_id : oldest_pre_decode_fetch_id;
+    assign scaiev.fetch_fetchFlushCount = (gc.fetch_flush | scaiev.issue_flush | scaiev.decode_flush) ? ({1'b0,pc_id} - {1'b0,scaiev.fetch_fetchFlushID}) : '0;
+    assign scaiev.issue_flushID = (gc.fetch_flush | scaiev.issue_flush) ? oldest_pre_issue_id : oldest_pre_decode_id;
+
+    fetch_id_t pc_id_incr_wrap;
+    fetch_id_t fetch_id_incr_wrap;
+    fetch_id_t pre_decode_id_incr_wrap;
+    always_comb begin
+        pc_id_incr_wrap = (early_branch_flush ? fetch_id : pc_id);
+        if (pc_id_assigned) begin
+            pc_id_incr_wrap = incr_fetch_id_t_wrap(pc_id_incr_wrap);
+        end
+        fetch_id_incr_wrap = fetch_id;
+        if (fetch_complete) begin
+            fetch_id_incr_wrap = incr_fetch_id_t_wrap(fetch_id_incr_wrap);
+        end
+        pre_decode_id_incr_wrap = pre_decode_id;
+        if (decode_advance && pop_pre_decode_instr) begin
+            pre_decode_id_incr_wrap = incr_fetch_id_t_wrap(pre_decode_id_incr_wrap);
+        end
+    end
     always_ff @ (posedge clk) begin
         if (rst) begin
             pc_id <= 0;
@@ -271,9 +297,9 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
         else begin
             //scaiev.fetch_flush already factored in to pc_id_assigned
             //In contrast to early_branch_flush, scaiev.fetch_flush only affects uninitiated fetches (before any FIFOs).
-            pc_id <= (early_branch_flush ? fetch_id : pc_id) + LOG2_MAX_IDS'(pc_id_assigned);
-            fetch_id <= fetch_id + LOG2_MAX_IDS'(fetch_complete);
-            pre_decode_id <= pre_decode_id + LOG2_MAX_IDS'(decode_advance && pop_pre_decode_instr);
+            pc_id <= pc_id_incr_wrap;
+            fetch_id <= fetch_id_incr_wrap;
+            pre_decode_id <= pre_decode_id_incr_wrap;
             post_decode_id <= post_decode_id + LOG2_MAX_IDS'(decode_advance);
         end
     end
@@ -300,14 +326,14 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
         if (gc.fetch_flush | (scaiev.decode_flush | scaiev.issue_flush))
             fetched_count_neg <= 0;
         else
-            fetched_count_neg <= fetched_count_neg + ID_COUNTER_W'(decode_advance && pop_pre_decode_instr) - ID_COUNTER_W'(fetch_complete);
+            fetched_count_neg <= fetched_count_neg + ID_COUNTER_FETCH_W'(decode_advance && pop_pre_decode_instr) - ID_COUNTER_FETCH_W'(fetch_complete);
     end
 
     //Full instruction count split into two: pre-issue and post-issue
     //pre-issue count can be cleared on a fetch flush
     //post-issue count decremented only on retire
     always_comb begin
-        pre_issue_count_next = pre_issue_count + ID_COUNTER_W'(pc_id_assigned) + ID_COUNTER_W'(pc_inject_id_assigned) - ID_COUNTER_W'(instruction_issued);
+        pre_issue_count_next = pre_issue_count + ID_COUNTER_FETCH_W'(pc_id_assigned) + ID_COUNTER_FETCH_W'(pc_inject_id_assigned) - ID_COUNTER_FETCH_W'(instruction_issued);
         if (scaiev.decode_flush & ~(gc.fetch_flush | scaiev.issue_flush)) begin
             //Decode flush -> Only what remains in issue stage (and doesn't leave it immediately) is "pre-issue".
             pre_issue_count_next = (issue.stage_valid & ~instruction_issued) ? 1 : 0;
@@ -339,13 +365,13 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
     end
 
     //Number of regular (i.e. non-injected) instructions from fetch to before retirement.
-    assign inflight_count_noninject_next = inflight_count_noninject + ID_COUNTER_W'(pc_id_assigned) - ID_COUNTER_W'(retire_next_count_noninject);
+    assign inflight_count_noninject_next = inflight_count_noninject + ID_COUNTER_FETCH_W'(pc_id_assigned) - ID_COUNTER_FETCH_W'(retire_next_count_noninject);
     //(corresponding registered counter)
     always_ff @ (posedge clk) begin
         if (gc.fetch_flush | scaiev.issue_flush)
-            inflight_count_noninject <= post_issue_count_noninject_next;
+            inflight_count_noninject <= ID_COUNTER_FETCH_W'(post_issue_count_noninject_next);
         else if (scaiev.decode_flush) //Special case: Instruction in Issue stage is not flushed but stalled, hence needs to be added.
-            inflight_count_noninject <= post_issue_count_noninject_next + ID_COUNTER_W'(issue.stage_valid && !scaiev.issue_injected && !instruction_issued);
+            inflight_count_noninject <= post_issue_count_noninject_next + ID_COUNTER_FETCH_W'(issue.stage_valid && !scaiev.issue_injected && !instruction_issued);
         else
             inflight_count_noninject <= inflight_count_noninject_next;
     end
@@ -458,19 +484,22 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
         for (int i = 0; i < RETIRE_PORTS; i++)
             retire_port_valid[i] <= (retire_port_valid_next[i] & ~gc.writeback_supress) && (i != 1 || !scaiev.rf_wrReg);
     end
+    assign scaiev.retire_ID = retire_ids_next[0];
+    assign scaiev.retire_count = retire_next.count;
+    assign scaiev.retire_suppress = gc.writeback_supress;
 
     ////////////////////////////////////////////////////
     //Outputs
 
     //SCAIE-V: Allow pre-decode ID space to be used up independently of post-decode IDs.
-    assign pc_id_available = ~inflight_count_noninject[LOG2_MAX_IDS];
+    assign pc_id_available = ((1<<LOG2_MAX_IDS_FETCH) == MAX_IDS_FETCH) ? (~inflight_count_noninject[LOG2_MAX_IDS_FETCH]) : (inflight_count_noninject <= MAX_IDS_FETCH);
     //assign pc_id_available = ~inflight_count[LOG2_MAX_IDS];
     assign pc_inject_id_available = ~post_decode_count[LOG2_MAX_IDS];
 
     //Decode
     assign decode.id = post_decode_id;
     //-> SCAIE-V: Stall decode if no post-decode ID is available - possible due to Decode Inject.
-    assign decode.valid = fetched_count_neg[LOG2_MAX_IDS]
+    assign decode.valid = fetched_count_neg[LOG2_MAX_IDS_FETCH]
         && ~post_decode_count[LOG2_MAX_IDS];// && (pc_inject_id_assigned ? (post_decode_count[LOG2_MAX_IDS-1:0] != {LOG2_MAX_IDS{1'b1}}) : 1);
     assign decode.pc = pc_table[pre_decode_id];
     assign decode.pc_id = pre_decode_id;
@@ -492,7 +521,7 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
         assign commit_packet[i].valid = (i == 1 && scaiev.rf_wrReg) || (wb_packet[i].valid & |commit_phys_addr[i]);
         assign commit_packet[i].data = (i == 1 && scaiev.rf_wrReg) ? scaiev.rf_wrReg_data : wb_packet[i].data;
     end// endgenerate
-    assign scaiev.rf_ready = !retire.valid;
+    assign scaiev.rf_ready = wb_is_stallable && !retire.valid;
 
     //Exception Support
     //generate
@@ -518,6 +547,18 @@ else begin : gen_scaiev_injectable //ENABLE_DECODE_INJECT
     decode_advanced_without_id_assertion:
         assert property (@(posedge clk) disable iff (rst) !(~decode.valid & ~pc_inject_id_assigned & decode_advance))
         else $error("Decode advanced without ID");
+
+    if ((1<<LOG2_MAX_IDS_FETCH) > MAX_IDS_FETCH) begin
+        pc_id_out_of_range_assertion:
+            assert property (@(posedge clk) disable iff (rst) !(pc_id >= MAX_IDS_FETCH))
+            else $error("pc_id out of range");
+        fetch_id_out_of_range_assertion:
+            assert property (@(posedge clk) disable iff (rst) !(fetch_id >= MAX_IDS_FETCH))
+            else $error("fetch_id out of range");
+        decode_pc_id_out_of_range_assertion:
+            assert property (@(posedge clk) disable iff (rst) !(decode.pc_id >= MAX_IDS_FETCH))
+            else $error("decode.pc_id out of range");
+    end
 
 end endgenerate
 endmodule

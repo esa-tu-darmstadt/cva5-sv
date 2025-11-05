@@ -39,6 +39,7 @@ module ras
     );
 
     (* ramstyle = "MLAB, no_rw_check" *) logic[31:0] lut_ram [CONFIG.BP.RAS_ENTRIES];
+    logic [CONFIG.BP.RAS_ENTRIES-1:0] lut_ram_valid;
 
     localparam RAS_DEPTH_W = $clog2(CONFIG.BP.RAS_ENTRIES);
     logic [RAS_DEPTH_W-1:0] read_index;
@@ -49,11 +50,16 @@ module ras
     initial lut_ram = '{default: 0};
      ///////////////////////////////////////////////////////
     assign ras.addr = lut_ram[read_index];
+    assign ras.valid = lut_ram_valid[read_index];
     
     //On a speculative branch, save the current stack pointer
     //Restored if branch is misspredicted (gc_fetch_flush)
-    cva5_fifo #(.DATA_WIDTH(RAS_DEPTH_W), .FIFO_DEPTH(MAX_IDS))
-        read_index_fifo (.clk, .rst(rst | gc.fetch_flush | early_branch_flush_ras_adjust), .fifo(ri_fifo));
+    cva5_fifo #(.DATA_WIDTH(RAS_DEPTH_W), .FIFO_DEPTH(MAX_IDS_FETCH))
+    read_index_fifo (
+        .clk,
+        .rst(rst | gc.fetch_flush | early_branch_flush_ras_adjust),
+        .fifo(ri_fifo)
+    );
 
     assign ri_fifo.data_in = read_index;
     assign ri_fifo.push = ras.branch_fetched;
@@ -63,6 +69,18 @@ module ras
     always_ff @ (posedge clk) begin
         if (ras.push)
             lut_ram[new_index] <= ras.new_addr;
+    end
+
+    always_ff @ (posedge clk) begin
+        if (rst) begin
+            lut_ram_valid <= '0;
+        end
+        else begin
+            if (ras.push)
+                lut_ram_valid[new_index] <= 1'b1;
+            if (ras.pop)
+                lut_ram_valid[read_index] <= 1'b0;
+        end
     end
     
     //Rolls over when full, most recent calls will be correct, but calls greater than depth

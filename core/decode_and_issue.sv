@@ -186,8 +186,8 @@ module decode_and_issue
     //Can move data into issue stage if:
     // there is no instruction currently in the issue stage, or
     // an instruction could issue (issue_flush, issue_hold and whether the instruction is valid are not needed in this check)
-    assign issue_stage_ready = ((~issue.stage_valid) | (issue_valid & |issue_ready)) & ~gc.issue_hold;
-    assign decode_advance = decode_valid & issue_stage_ready & ~scaiev.decode_stall & ~(scaiev_uses_rd_decoupled & stall_rd_decoupled);
+    assign issue_stage_ready = ((~issue.stage_valid) | (issue_valid & |issue_ready & ~gc.issue_hold));
+    assign decode_advance = decode_valid & issue_stage_ready & ~scaiev.decode_stall & ~(scaiev_uses_rd_decoupled & stall_rd_decoupled) & ~gc.rename_hold;
 
     //Instruction aliases
     assign opcode = selected_instruction[6:0];
@@ -234,14 +234,21 @@ module decode_and_issue
         assign scaiev_uses_rd_decoupled = is_scaiev_isax && scaiev.decode_isSCAIEV_usesRD_decoupled;
 
         logic [$clog2(32+1)-1:0] pending_decoupled; //SCAIE-V
+        logic pending_decoupled_in_issue;
         //SCAIE-V decoupled writeback: prevent overuse of register file resources.
         //CVA5 assumes that the number of in-flight instructions with a destination is max. 32  (see renamer.sv).
         // Without decoupled writeback, this is bounded by MAX_IDS.
         // However, launches with decoupled allocations would not be bounded without this logic.
         always_ff @(posedge clk) begin
             logic [$size(pending_decoupled)-1:0] next_pending_decoupled;
+            logic next_pending_decoupled_in_issue;
             next_pending_decoupled = pending_decoupled;
-            if (scaiev_uses_rd_decoupled && !scaiev_decode_inject && decode_advance) begin
+            next_pending_decoupled_in_issue = pending_decoupled_in_issue;
+            if (!scaiev.issue_isStalling || (gc.fetch_flush | scaiev.issue_flush)) begin
+                next_pending_decoupled_in_issue = 1'b0;
+            end
+            if (scaiev_uses_rd_decoupled && !scaiev_decode_inject && decode_advance && !(gc.fetch_flush | scaiev.issue_flush | scaiev.decode_flush)) begin
+                next_pending_decoupled_in_issue = 1'b1;
                 next_pending_decoupled = next_pending_decoupled + 6'd1;
                 if (next_pending_decoupled == 6'd0) begin
                     $display("Error: next_pending_decoupled overflow");
@@ -256,11 +263,20 @@ module decode_and_issue
                 end
                 next_pending_decoupled = next_pending_decoupled - 6'd1;
             end
+            if (pending_decoupled_in_issue && (gc.fetch_flush | scaiev.issue_flush)) begin
+                if (next_pending_decoupled == 6'd0) begin
+                    $display("Error: next_pending_decoupled underflow");
+                    $finish;
+                end
+                next_pending_decoupled = next_pending_decoupled - 6'd1;
+            end
             if (rst) begin
                 pending_decoupled <= 0;
+                pending_decoupled_in_issue <= 1'b0;
             end
             else begin
                 pending_decoupled <= next_pending_decoupled;
+                pending_decoupled_in_issue <= next_pending_decoupled_in_issue;
             end
             stall_rd_decoupled <= (next_pending_decoupled >= (32-MAX_IDS));
         end
@@ -375,7 +391,7 @@ module decode_and_issue
         if (rst | gc.fetch_flush | scaiev.issue_flush)
             issue.stage_valid <= 0;
         else if (issue_stage_ready)
-            issue.stage_valid <= decode_valid & ~(scaiev_uses_rd_decoupled & stall_rd_decoupled) & ~scaiev.decode_stall & ~(scaiev.decode_flush | scaiev.issue_flush);
+            issue.stage_valid <= decode_valid & ~(scaiev_uses_rd_decoupled & stall_rd_decoupled) & ~scaiev.decode_stall & ~(scaiev.decode_flush | scaiev.issue_flush) & ~gc.rename_hold;
     end
 
     ////////////////////////////////////////////////////
@@ -695,21 +711,36 @@ module decode_and_issue
     //Div unit inputs
     generate if (CONFIG.INCLUDE_DIV) begin : gen_decode_div_inputs
         phys_addr_t prev_div_rs_addr [2];
+        logic prev_div_signed;
         logic [1:0] div_rd_match;
         logic prev_div_result_valid;
         logic div_rs_overwrite;
         logic div_op_reuse;
 
+        logic signed_divop;
+
         always_ff @(posedge clk) begin
-            if (issue_to[UNIT_IDS.DIV])
+            if (rst) begin
+                prev_div_rs_addr[0] <= '0;
+                prev_div_rs_addr[1] <= '0;
+                prev_div_signed <= '0;
+            end
+            else if (issue_to[UNIT_IDS.DIV]) begin
                 prev_div_rs_addr <= issue_phys_rs_addr[RS1:RS2];
+                prev_div_signed <= signed_divop;
+            end
         end
 
-        assign div_op_reuse = {prev_div_result_valid, prev_div_rs_addr[RS1], prev_div_rs_addr[RS2]} == {1'b1, issue_phys_rs_addr[RS1],issue_phys_rs_addr[RS2]};
+        assign signed_divop = ~issue.fn3[0];
+
+        assign div_op_reuse = prev_div_result_valid
+            && (prev_div_rs_addr[1'(RS1)] == issue_phys_rs_addr[RS1])
+            && (prev_div_rs_addr[1'(RS2)] == issue_phys_rs_addr[RS2])
+            && (prev_div_signed == signed_divop);
 
         //Clear if prev div inputs are overwritten by another instruction
-        assign div_rd_match[RS1] = (issue.phys_rd_addr == prev_div_rs_addr[RS1]);
-        assign div_rd_match[RS2] = (issue.phys_rd_addr == prev_div_rs_addr[RS2]);
+        assign div_rd_match[1'(RS1)] = (issue.phys_rd_addr == prev_div_rs_addr[1'(RS1)]);
+        assign div_rd_match[1'(RS2)] = (issue.phys_rd_addr == prev_div_rs_addr[1'(RS2)]);
         assign div_rs_overwrite = |div_rd_match;
 
         set_clr_reg_with_rst #(.SET_OVER_CLR(1), .WIDTH(1), .RST_VALUE(0)) prev_div_result_valid_m (
@@ -740,6 +771,7 @@ module decode_and_issue
         assign scaiev_inputs.pc = issue.pc;
         assign scaiev_inputs.uses_rd = issue.uses_rd;
 
+        assign scaiev.issue_ID = issue.id;
         assign scaiev.issue_PC = issue.pc;
         assign scaiev.issue_RS1_valid = !rs_conflict[RS1];
         assign scaiev.issue_RS1 = rf.data[RS1];
@@ -757,12 +789,13 @@ module decode_and_issue
         assign scaiev.issue_RD_id = issue.rd_addr;
         assign scaiev.issue_Instr = issue.instruction;
         assign scaiev.issue_valid = issue_valid_or_waiting_for_operands;
-        assign scaiev.decode_isStalling = !(decode_valid & issue_stage_ready);
+        assign scaiev.decode_isStalling = !(decode_valid & issue_stage_ready) || (scaiev_uses_rd_decoupled && stall_rd_decoupled);
         assign scaiev.issue_isStalling = !issue_valid_prescaiev || !(|issue_ready) || gc.fetch_flush || scaiev.issue_flush;
         assign scaiev.issue_isSCAIEV = unit_needed_issue_stage[UNIT_IDS.SCAIEV];
         assign scaiev.issue_isLS = unit_needed_issue_stage[UNIT_IDS.LS];
 
         assign scaiev.issue_injected = issue_is_injected;
+        assign scaiev.decode_phys_RD_decoupled = renamer.phys_rd_addr;
         assign scaiev.issue_phys_RD_decoupled = issue.phys_rd_addr;
     end endgenerate
 
@@ -782,7 +815,7 @@ module decode_and_issue
     illegal_op_check (
         .instruction(decode.instruction), .illegal_instruction(illegal_instruction_pattern_prescaiev)
     );
-    assign illegal_instruction_pattern = illegal_instruction_pattern_prescaiev & (~scaiev.decode_isSCAIEV);
+    assign illegal_instruction_pattern = illegal_instruction_pattern_prescaiev & ~(scaiev.decode_isSCAIEV) & ~(scaiev_decode_inject);
     always_ff @(posedge clk) begin
         if (rst)
             illegal_instruction_pattern_r <= 0;

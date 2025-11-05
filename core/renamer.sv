@@ -106,7 +106,7 @@ module renamer
         if (gc.init_clear)
             freed_phys_addr = {1'b1, clear_index[4:0]};
         else if (scaiev.rf_wrReg && !retire.valid) //TODO: Consider exceptions that should suppress the decoupled writeback.
-            freed_phys_addr = scaiev.rf_wrReg_prev_phys_RD[5:0];
+            freed_phys_addr = scaiev.rf_wrReg_cancel ? scaiev.rf_wrReg_phys_RD : scaiev.rf_wrReg_prev_phys_RD[5:0];
         else
             freed_phys_addr = gc.writeback_supress ? inuse_list_output.spec_phys_addr : inuse_list_output.previous_phys_addr;
     end
@@ -155,6 +155,7 @@ module renamer
     assign inuse_list_input.previous_phys_addr = spec_table_previous_r.phys_addr;
     assign inuse_list_input.previous_wb_group = spec_table_previous_r.wb_group;
     
+    assign scaiev.decode_prev_phys_RD_decoupled = {spec_table_previous.wb_group, spec_table_previous.phys_addr};
     assign scaiev.issue_prev_phys_RD_decoupled = {spec_table_previous_r.wb_group, spec_table_previous_r.phys_addr};
 
     logic spec_table_update;

@@ -41,7 +41,9 @@ module scaiev_unit
         unit_issue_interface.decode ls_issue_scaiev,
         unit_writeback_interface.wb ls_wb_scaiev,
         output logic ls_issue_scaiev_stage,
+        output logic ls_issue_scaiev_decoupled,
         input logic ls_wb_scaiev_stage,
+        input logic ls_wb_scaiev_decoupled,
         
         input logic ls_exception_valid,
         input id_t ls_exception_id,
@@ -62,6 +64,7 @@ module scaiev_unit
     logic [XLEN-1:0] execute_pc;
 
     id_t execute_id;
+    id_t execute_id_or_counter;
     logic execute_valid;
 
     //Separate counters to be able to show SCAIE-V 'unique' IDs despite the non-writeback IDs being freed immediately.
@@ -96,6 +99,7 @@ module scaiev_unit
             execute_instruction <= 'x;
             execute_pc <= 'x;
             execute_id <= 'x;
+            execute_id_or_counter <= 'x;
             execute_expects_rd <= 'x;
             execute_valid <= 0;
             execute_nonrd_idcounter_next <= 0;
@@ -107,9 +111,12 @@ module scaiev_unit
             execute_instruction <= scaiev_inputs.instruction;
             execute_pc <= scaiev_inputs.pc;
             execute_id <= issue.id;
+            execute_id_or_counter <= issue.id;
             execute_expects_rd <= issue.new_request && scaiev_inputs.uses_rd;
-            if (issue.new_request && !scaiev_inputs.uses_rd)
+            if (issue.new_request && !scaiev_inputs.uses_rd) begin
+                execute_id_or_counter <= execute_nonrd_idcounter_next;
                 execute_nonrd_idcounter_next <= execute_nonrd_idcounter_next + 1;
+            end
             execute_valid <= issue.new_request;
         end
         else if (scaiev.execute_deq) begin
@@ -119,6 +126,7 @@ module scaiev_unit
             execute_instruction <= 'x;
             execute_pc <= 'x;
             execute_id <= 'x;
+            execute_id_or_counter <= 'x;
             execute_expects_rd <= 'x;
             execute_valid <= 0;
         end
@@ -141,6 +149,7 @@ module scaiev_unit
     assign scaiev.execute_RS2 = execute_rs2;
     assign scaiev.execute_RD_AS_RS = execute_rd_as_rs;
     assign scaiev.execute_ID = execute_id;
+    assign scaiev.execute_ID_or_counter = execute_id_or_counter;
     assign scaiev.execute_expects_rd = execute_expects_rd;
     assign scaiev.execute_valid = execute_valid && !execute_stall_idcounter_full;
 
@@ -181,16 +190,19 @@ module scaiev_unit
     assign ls_issue_scaiev.new_request = (scaiev.execute_injectLS_valid || scaiev.issue_injectLS_valid) && ls_issue_scaiev.ready;
     assign ls_issue_scaiev.id = scaiev.execute_injectLS_potentiallyValid ? execute_id : issue.id;
     assign ls_issue_scaiev_stage = scaiev.execute_injectLS_potentiallyValid ? 1'd1 : 1'd0;
+    assign ls_issue_scaiev_decoupled = scaiev.execute_injectLS_decoupled ? 1'd1 : 1'd0;
 
     assign scaiev.injectLS_ready = ls_issue_scaiev.ready;
     assign scaiev.issue_injectLS_done = ls_wb_scaiev.done && ls_wb_scaiev_stage == 1'd0;
     assign scaiev.execute_injectLS_done = ls_wb_scaiev.done && ls_wb_scaiev_stage == 1'd1;
     assign scaiev.injectLS_readData = ls_wb_scaiev.rd;
+    assign scaiev.injectLS_done_decoupled = ls_wb_scaiev_decoupled;
 
     
     assign branch_flush = 0;
     
     assign br_results.id = 'X;
+    assign br_results.pc_id = 'X;
     assign br_results.valid = 0;
     assign br_results.pc = 'X;
     assign br_results.target_pc = 'X;

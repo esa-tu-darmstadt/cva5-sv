@@ -31,6 +31,8 @@ module scaiev_glue
     wire issue_is_isax_decoupled_wb = 0;
     //Condition 'unlock all registers' (e.g. 'all WrRD_spawn ISAXes killed').
     wire unlock_all_registers = 0;
+    //Condition 'inject-based writeback cancelled' (only unlock, don't write)
+    logic decode_wrReg_cancel;
 
     generate if (ENABLE_SCAIEV_REGHAZARD) begin
         
@@ -57,7 +59,7 @@ module scaiev_glue
                 rd_inuse_bitmap[scaiev.decode_RD_id] <= '1;
                 rd_last_locked <= scaiev.decode_RD_id;
             end
-            else if (scaiev.decode_wrReg && !scaiev.decode_stall && scaiev.decode_wrReg_RD != '0) begin
+            else if ((scaiev.decode_wrReg && !scaiev.decode_stall || decode_wrReg_cancel) && scaiev.decode_wrReg_RD != '0 ) begin
                 //Unlock register.
                 rd_inuse_bitmap[scaiev.decode_wrReg_RD] <= 0;
             end
@@ -84,8 +86,7 @@ module scaiev_glue
     logic [5:0] explicit_free_reg_addr;
 
     generate if (ENABLE_DECOUPLED_WRITEBACK && ENABLE_DECOUPLED_WRITEBACK_WAW) begin
-        //TODO: Handle instruction discard
-
+        //TODO: isaxkill support (free registers in CVA5)
 
         //Logic to prevent certain kind of WaW hazard: premature deallocation of decoupled instruction's destination register.
         //-> Later instruction that overrides physical register could finish sooner and free a register that still is to be written to.
@@ -96,6 +97,8 @@ module scaiev_glue
         //Indicates whether a logical destination register was prevented from being freed,
         // and still has to be freed by the ISAX on retirement (in addition to the previous register).
         logic [63:0] phys_should_be_freed_by_isax;
+
+        assign scaiev.renamer_addtofree_skip = !unlock_all_registers && phys_inuse_by_isax[scaiev.renamer_addtofree_reg] == 1'b1;
 
         always_ff @(posedge clk) begin
             scaiev.renamer_addtofree_skip = 0;
@@ -115,7 +118,7 @@ module scaiev_glue
                 if (scaiev.rf_wrReg) begin
                     next_phys_inuse_by_isax[scaiev.rf_wrReg_phys_RD] = 1'b0; //Write port A2
                     next_phys_should_be_freed_by_isax[scaiev.rf_wrReg_phys_RD] = 1'b0; //Write port B2
-                    if (phys_should_be_freed_by_isax[scaiev.rf_wrReg_phys_RD]) begin //Read port B1
+                    if (!scaiev.rf_wrReg_cancel && phys_should_be_freed_by_isax[scaiev.rf_wrReg_phys_RD]) begin //Read port B1
                         // -> Inject register free for scaiev.rf_wrReg_phys_RD (e.g. repeat identical writeback next cycle)
                         explicit_free_reg <= 1;
                         explicit_free_reg_addr <= scaiev.rf_wrReg_phys_RD;
@@ -125,10 +128,8 @@ module scaiev_glue
                 if (issue_is_isax_decoupled_wb) begin
                     next_phys_inuse_by_isax[scaiev.issue_phys_RD_decoupled] = 1'b1; //Write port A1
                 end
-                if (phys_inuse_by_isax[scaiev.renamer_addtofree_reg] == 1'b1) begin //Read port A1
-                    scaiev.renamer_addtofree_skip = 1'b1;
-                    if (scaiev.renamer_addtofree_valid)
-                        next_phys_should_be_freed_by_isax[scaiev.renamer_addtofree_reg] = 1'b1; //Write port B1
+                if (scaiev.renamer_addtofree_valid && phys_inuse_by_isax[scaiev.renamer_addtofree_reg] == 1'b1) begin //Read port A1
+                    next_phys_should_be_freed_by_isax[scaiev.renamer_addtofree_reg] = 1'b1; //Write port B1
                 end
                 phys_inuse_by_isax <= next_phys_inuse_by_isax;
                 phys_should_be_freed_by_isax <= next_phys_should_be_freed_by_isax;

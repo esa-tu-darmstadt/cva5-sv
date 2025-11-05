@@ -29,8 +29,10 @@ package cva5_types;
 
     localparam LOG2_RETIRE_PORTS = $clog2(RETIRE_PORTS);
     localparam LOG2_MAX_IDS = $clog2(MAX_IDS);
+    localparam LOG2_MAX_IDS_FETCH = $clog2(MAX_IDS_FETCH);
 
     typedef logic[LOG2_MAX_IDS-1:0] id_t;
+    typedef logic[LOG2_MAX_IDS_FETCH-1:0] fetch_id_t;
     typedef logic[1:0] branch_predictor_metadata_t;
 
     typedef logic [3:0] addr_hash_t;
@@ -65,7 +67,7 @@ package cva5_types;
 
     typedef struct packed{
         id_t id;
-        id_t pc_id; //Pre-Decode
+        fetch_id_t pc_id; //Pre-Decode
         logic [31:0] pc;
         logic [31:0] instruction;
         logic valid;
@@ -84,7 +86,7 @@ package cva5_types;
         logic uses_rd;
         logic is_multicycle;
         id_t id;
-        id_t pc_id; //Pre-Decode
+        fetch_id_t pc_id; //Pre-Decode
         exception_sources_t exception_unit;
         logic stage_valid;
         fetch_metadata_t fetch_metadata;
@@ -104,7 +106,7 @@ package cva5_types;
     } alu_inputs_t;
 
     typedef struct packed {
-        id_t pc_id;
+        fetch_id_t pc_id;
         logic [XLEN:0] rs1;
         logic [XLEN:0] rs2;
         logic [31:0] pc_p4;
@@ -121,6 +123,7 @@ package cva5_types;
 
     typedef struct packed {
         id_t id;
+        fetch_id_t pc_id;
         logic valid;
         logic [31:0] pc;
         logic [31:0] target_pc;
@@ -270,6 +273,7 @@ package cva5_types;
     typedef struct packed{
         logic init_clear;
         logic fetch_hold;
+        logic rename_hold;
         logic issue_hold;
         logic fetch_flush;
         logic writeback_supress;

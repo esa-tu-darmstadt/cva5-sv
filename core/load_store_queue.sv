@@ -117,6 +117,7 @@ module load_store_queue //ID-based input buffer for Load/Store Unit
     store_queue  # (.CONFIG(CONFIG)) sq_block (
         .clk (clk),
         .rst (rst | gc.sq_flush),
+        .gc (gc),
         .lq_push (lq.push),
         .lq_pop (lq.pop),
         .lq_push_no_conflict (sv_load_order_irrelevant), //SCAIE-V

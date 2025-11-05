@@ -573,7 +573,8 @@ generate if (CONFIG.INCLUDE_S_MODE) begin : gen_csr_s_mode
 
     ////////////////////////////////////////////////////
     //STVEC
-    logic [31:0] stvec_mask = '1;
+    logic [31:0] stvec_mask;
+    assign stvec_mask = '1;
     always_ff @(posedge clk) begin
         if (rst)
             stvec <= {CONFIG.CSRS.RESET_VEC[XLEN-1:2], 2'b00};

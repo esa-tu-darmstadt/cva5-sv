@@ -55,6 +55,7 @@ module branch_unit
     logic branch_taken;
     logic branch_taken_ex;
 
+    fetch_id_t pc_id_ex;
     id_t id_ex;
     logic [31:0] jump_pc;
     logic [31:0] new_pc;
@@ -104,8 +105,8 @@ module branch_unit
         if (issue.new_request) begin
             branch_taken_ex <= branch_taken;
             new_pc_ex <= {new_pc[31:1], new_pc[0]  & ~branch_inputs.jalr};
-            //id_ex <= issue.id;
-            id_ex <= branch_inputs.pc_id;
+            id_ex <= issue.id;
+            pc_id_ex <= branch_inputs.pc_id;
             jal_jalr_ex <= branch_inputs.jal_jalr;
         end
     end
@@ -144,6 +145,7 @@ module branch_unit
         end
     end
 
+    assign br_results.pc_id = pc_id_ex;
     assign br_results.id = id_ex;
     assign br_results.valid = instruction_is_completing;
     assign br_results.pc = pc_ex;

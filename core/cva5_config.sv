@@ -288,6 +288,8 @@ package cva5_config;
     //ID limit
     //MAX_IDS restricted to a power of 2
     localparam MAX_IDS = 8; //8 sufficient for rv32im configs
+    //MAX_IDS_FETCH unrestricted
+    localparam MAX_IDS_FETCH = 8; //ENABLE_DECODE_INJECT ? 10 : 8;
 
     ////////////////////////////////////////////////////
     //Number of commit ports

@@ -64,6 +64,7 @@ module instruction_metadata_and_id_management_vanilla
 
         //WB
         input wb_packet_t wb_packet [CONFIG.NUM_WB_GROUPS],
+        input logic wb_is_stallable,
         output commit_packet_t commit_packet [CONFIG.NUM_WB_GROUPS],
 
         //Retirer
@@ -182,6 +183,8 @@ module instruction_metadata_and_id_management_vanilla
     end
 
     assign scaiev.fetch_fetchFlushID = (gc.fetch_flush | scaiev.issue_flush) ? oldest_pre_issue_id : oldest_pre_decode_id;
+    assign scaiev.fetch_fetchFlushCount = (gc.fetch_flush | scaiev.issue_flush | scaiev.decode_flush) ? ({1'b0,pc_id} - {1'b0,scaiev.fetch_fetchFlushID}) : '0;
+    assign scaiev.issue_flushID = (gc.fetch_flush | scaiev.issue_flush) ? oldest_pre_issue_id : oldest_pre_decode_id;
     always_ff @ (posedge clk) begin
         if (gc.fetch_flush | scaiev.issue_flush) begin
             pc_id <= oldest_pre_issue_id;
@@ -342,6 +345,9 @@ module instruction_metadata_and_id_management_vanilla
         for (int i = 0; i < RETIRE_PORTS; i++)
             retire_port_valid[i] <= (retire_port_valid_next[i] & ~gc.writeback_supress) && (i != 1 || !scaiev.rf_wrReg);
     end
+    assign scaiev.retire_ID = retire_ids_next[0];
+    assign scaiev.retire_count = retire_next.count;
+    assign scaiev.retire_suppress = gc.writeback_supress;
 
     ////////////////////////////////////////////////////
     //Outputs
@@ -367,7 +373,7 @@ module instruction_metadata_and_id_management_vanilla
         assign commit_packet[i].valid = (i == 1 && scaiev.rf_wrReg) || (wb_packet[i].valid & |commit_phys_addr[i]);
         assign commit_packet[i].data = (i == 1 && scaiev.rf_wrReg) ? scaiev.rf_wrReg_data : wb_packet[i].data;
      end endgenerate
-    assign scaiev.rf_ready = !retire.valid;
+    assign scaiev.rf_ready = wb_is_stallable && !retire.valid;
 
     //Exception Support
      generate if (CONFIG.INCLUDE_M_MODE) begin : gen_id_exception_support

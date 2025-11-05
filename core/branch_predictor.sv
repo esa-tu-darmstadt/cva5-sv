@@ -86,7 +86,7 @@ module branch_predictor
         logic branch_prediction_used;
         logic [CONFIG.BP.WAYS-1:0] branch_predictor_update_way;
     } branch_metadata_t;
-    (* ramstyle = "MLAB, no_rw_check" *) logic [$bits(branch_metadata_t)-1:0] branch_metadata_table [MAX_IDS];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [$bits(branch_metadata_t)-1:0] branch_metadata_table [MAX_IDS_FETCH];
     branch_metadata_t branch_metadata_if;
     branch_metadata_t branch_metadata_ex;
 
@@ -180,7 +180,7 @@ module branch_predictor
         if (bp.pc_id_assigned)
             branch_metadata_table[bp.pc_id] <= branch_metadata_if;
     end
-    assign branch_metadata_ex = branch_metadata_table[br_results.id];
+    assign branch_metadata_ex = branch_metadata_table[br_results.pc_id];
 
     ////////////////////////////////////////////////////
     //Execution stage update
